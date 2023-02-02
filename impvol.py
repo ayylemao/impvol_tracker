@@ -15,27 +15,31 @@ class Ticker():
     def __init__(self, ticker, client) -> None:
         self.ticker = ticker 
         self.client = client 
-    
-    
-    def get_underlying_close(self):
+     
+    def get_underlying_close(self, date):
         try:
-            return self.client.get_previous_close_agg(self.ticker, adjusted=True)[0].close
-        except Exception as e:
-            print(e)
+            date = date.strftime('%Y-%m-%d')
+        except AttributeError as err:
+            print(err)
+        try:  
+            return self.client.get_daily_open_close_agg(ticker=ticker, date=date)[0].close
+        except Exception as err:
+            print(err)
 
     def get_expirations(self):
         self.expirations = pd.DataFrame(columns=['exp'])
         self.expirations['exp'] = yf.Ticker(self.ticker).options
         self.expirations['exp'] = pd.to_datetime(self.expirations['exp'])
         return
+    
+
+
 #client.list_options_contracts(underlying_ticker=ticker, contract_type='call', strike_price=)
 
-
-    def get_next_expiration
+'asdf'.strftime()
 intc = Ticker(ticker, client)
 intc.get_expirations()
-intc.expirations.dtypes
-
+intc.expirations
 
 today = datetime.datetime.today().strftime('%Y-%M-%d')
 response = client.list_options_contracts(
