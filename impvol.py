@@ -20,17 +20,21 @@ def find_nearest(array, value):
 def get_daily_close(ticker, eval_date):
     obj = yf.Ticker(ticker)
     res = obj.history(start=eval_date, end=pd.to_datetime(eval_date)+datetime.timedelta(days=1)).iloc[0, 3]
-    return res
-    
+    return res 
 
-def lfnc(test_date, weekday_idx=4): return test_date + \
-    datetime.timedelta(days=(weekday_idx - test_date.weekday() + 7) % 7)
+def lfnc(test_date, weekday_idx=4): 
+    if test_date.weekday() == 4:
+        return test_date + datetime.timedelta(days=7)
+    else: 
+        return test_date + datetime.timedelta(days=(weekday_idx - test_date.weekday()) % 7)
+
 
 class Ticker():
     def __init__(self, ticker, client, cursor) -> None:
         self.ticker = ticker 
         self.client = client 
         self.cursor = cursor
+        self.dividend_yield = 0
         self.chain = {}
         self.database = pd.DataFrame(columns=['close_date', 'underlying_ticker', 'underlying_close', 'contract_type', 'expiration_date', 'strike_price', 'ticker',  'price', 'IV']) 
 
@@ -68,12 +72,12 @@ class Ticker():
         put_idx = find_nearest(puts['strike_price'], underlying_close) 
          
         dfIV['price'] = np.nan
-        for index, row in calls.iloc[call_idx-2:call_idx+3].iterrows():
+        for index, row in calls.iloc[call_idx-4:call_idx+5].iterrows():
             try:
                 dfIV.loc[index, 'price'] = self.client.get_daily_open_close_agg(ticker=row['ticker'], date=eval_date).close  
             except Exception as err: 
                 print(dfIV.loc[index, 'ticker'], f"no price found on {eval_date}")
-        for index, row in puts.iloc[put_idx-2:put_idx+3].iterrows():
+        for index, row in puts.iloc[put_idx-4:put_idx+5].iterrows():
             try:
                 dfIV.loc[index, 'price'] = self.client.get_daily_open_close_agg(ticker=row['ticker'], date=eval_date).close  
             except Exception as err: 
@@ -93,79 +97,81 @@ class Ticker():
             div = tick.loc[str((int(datetime.date.today().strftime('%Y'))-1)), 'Dividends']
         except KeyError:
             div = 0.00
+            self.dividend_yield = div
         query = f'''IF NOT EXISTS ( SELECT 1 FROM impvoltracker.option_data.div_data WHERE underlying_ticker = '{self.ticker}') THEN
         BEGIN
         INSERT INTO impvoltracker.option_data.div_data (underlying_ticker, div_yield_cash) VALUES ('{self.ticker}', {div:.3f});
         END;
         END IF'''
-        self.cursor.query(query)
+        #self.cursor.query(query)
         self.dividend_yield = div
         return
     
     def calc_impl_vol(self, exp_date, eval_date):
         tbill = yf.Ticker('^IRX')
         r = tbill.history(start=eval_date, end=pd.to_datetime(eval_date)+datetime.timedelta(days=1)).iloc[0, 3]/100 
-        T = (pd.to_datetime(exp_date) - pd.to_datetime(eval_date)).days / 365
+        T = (pd.to_datetime(exp_date) - pd.to_datetime(eval_date)).days
         for index, row in self.database[~self.database['price'].isnull()].iterrows():
             try:
+                #print('debug:')
+                #print('Option Type:', row['contract_type'][0])
+                #print('underlying_close:', row['underlying_close'])
+                #print('strike price:', row['strike_price'])
+                #print('DTE:', T, T/365)
+                #print('r:', r)
+                #print('q:', np.log(1+self.dividend_yield/row['underlying_close']))
+                #print('cp:', row['price'])
                 impvol = amer_implied_vol(
                                             option_type=row['contract_type'][0],
                                             fs=row['underlying_close'],
                                             x=row['strike_price'],
-                                            t=T,
+                                            t=T/365,
                                             r=r,
                                             q=np.log(1+self.dividend_yield/row['underlying_close']),
                                             cp=row['price']
                                             )
                 self.database.loc[index, 'IV'] = impvol
             except Exception as err:
+                impvol = np.nan
+                self.database.loc[index, 'IV'] = impvol
                 print(err)
 
-eval_date = '2023-01-15'
-intc = Ticker('WDC', client, cursor)
-intc.get_div_yield()
 
-dfIV = pd.DataFrame(columns=['IV'], index=pd.date_range(start='2023-01-15', end='2023-01-31'))
+ticker = 'SPY'
+intc = Ticker(ticker, client, cursor)
+intc.get_div_yield()
+start = '2023-02-01'
+end = '2023-02-05'
+dfIV = pd.DataFrame(columns=['IV'], index=pd.date_range(start=start, end=end))
+
+dfIV
 
 for date in dfIV.index:
-    if not (date.weekday() == 5) or not (date.weekday() == 6):
+    if not (date.weekday() == 5) and not (date.weekday() == 6):
         eval_date = date.strftime('%Y-%m-%d')
         try:
             exp_date = intc.get_expiration(eval_date)
             intc.get_options_chain(exp_date=exp_date)
             intc.get_options_prices(exp=exp_date, eval_date=eval_date)
             intc.calc_impl_vol(exp_date, eval_date)
-            dfIV.loc[date, 'IV'] = intc.database.IV.mean()
+            dfIV.loc[date, 'IV'] = intc.database[intc.database['close_date']==date.strftime('%Y-%m-%d')].IV.mean()
+            print(intc.database[intc.database['close_date']==date.strftime('%Y-%m-%d')])
+
         except Exception as err:
             print(date)
             print(err)
 dfIV
 
-for i in range(0, 1000):
-    #pd.DataFrame(client.list_options_contracts(underlying_ticker='WDC', expiration_date='2023-02-03', expired=True, strike_price=32))
-    client.get_daily_open_close_agg(ticker='WDC', date='2023-01-25')
-    print(i)
 
 
-def get_daily_close(ticker, eval_date):
-    obj = yf.Ticker(ticker)
-    res = obj.history(start=eval_date, end=pd.to_datetime(eval_date)+datetime.timedelta(days=1)).iloc[0, 3]
-    return res
-print(get_daily_close('WDC', '2023-01-18') )
+dfIV  
+intc.database[intc.database.IV.isnull()]
 
-tick = yf.Ticker('WDC')
-tick.history()
-
-dfIV.index = dfIV.index
-dfIV
-
-df = tick.history()
-df.reset_index(inplace=True)
+tick = yf.Ticker(ticker)
+df = tick.history(start=start, end=end)
+df = df.tz_localize(None)
 dfmerged = pd.merge(left=dfIV, right=df['Close'], left_index=True, right_index=True)
 
-
-dfIV.index
-df = df.tz_localize(None)
 dfmerged.reset_index(inplace=True)
 
 dfmerged['exp_date'] = dfmerged['index'].apply(lambda x: lfnc(x))
@@ -173,10 +179,10 @@ dfmerged['DTE'] = dfmerged.apply(lambda x: (x['exp_date'] - x['index']).days, ax
 dfmerged['DTE'] = dfmerged['DTE'].apply(lambda x : 7 if (x == 0) else x)
 dfmerged['actual_move%'] = (dfmerged.Close - dfmerged.Close.shift(1))/dfmerged.Close.shift(1)
 dfmerged['actual_move'] = (dfmerged.Close - dfmerged.Close.shift(1))
-dfmerged['implied_move'] = dfmerged.Close.shift(1)*(dfmerged.IV * np.sqrt(dfmerged.DTE/365))
-dfmerged['implied_move%'] = dfmerged.IV * np.sqrt(dfmerged.DTE/365) 
-dfmerged
+dfmerged['implied_move'] = dfmerged.Close*(dfmerged.IV.shift(1) * np.sqrt(1/365))
+dfmerged['implied_move%'] = dfmerged.IV.shift(1) * np.sqrt(1/365) 
 dfmerged['direction'] = dfmerged.actual_move.apply(lambda x: True if (x>=0) else False)
+dfmerged
 
 import matplotlib.pyplot as plt
 
@@ -186,7 +192,16 @@ ax.bar(dfmerged['index'], dfmerged.actual_move, color=dfmerged.direction.map({Tr
 ax.errorbar(dfmerged['index'][1:], np.zeros(dfmerged.shape[0]-1), yerr=dfmerged.implied_move.shift(1)[1:], capsize=2, c='black')
 ax.tick_params(axis='x', rotation=25)
 fig.tight_layout()
-fig.savefig('wdc.png')
-dfmerged.shift(1)
-lambda x : True if (x > 10 and x < 20) else False
-dfmerged
+fig.savefig(f'{ticker}.png')
+dfIV
+0.323669*np.sqrt(1/365)
+
+df = intc.database
+df[df['close_date']=='2023-01-26']
+from GBS import *
+amer_implied_vol(option_type='c', fs=30.09, x=29, t=0.8/365, r=0.04543, q=0.047, cp=0.9)
+df
+
+tbill = yf.Ticker('^IRX')
+r = tbill.history(start='2023-01-26')
+r
